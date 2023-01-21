@@ -1,0 +1,14 @@
+{
+  "extends": "@tsconfig/node18",
+  "compilerOptions": {
+    "noImplicitAny": false,
+    "lib": ["dom", "esnext"],
+    "module": "ESNext",
+    "target": "ESNext",
+    "resolveJsonModule": true,
+    "baseUrl": "src",
+    "outDir": "dist"
+  },
+  "include": ["src"],
+  "exclude": ["node_modules"]
+}
