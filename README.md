@@ -4,7 +4,8 @@
 
 ```
 git clone https://github.com/onetxpunch/sentiment-liquidator --recursive
-cd monitor && yarn
+cd sentiment-liquidator
+cd monitor && yarn && cd .. && cd liquidator && yarn && cd ..
 ```
 
 ## start
@@ -25,7 +26,8 @@ forge create src/Contract.sol:Contract
 ### liquidator
 
 ```
-cd liquiator
+cd liquidator
+yarn
 forge test
 ```
 
