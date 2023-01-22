@@ -6,7 +6,8 @@ import "../lib/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
 // import "../lib/sentiment-protocol/src/interface/core/IAccountManager.sol";
 import "../lib/sentiment-protocol/src/interface/core/IRiskEngine.sol";
 import "../lib/sentiment-protocol/src/interface/core/IAccount.sol";
-import "../lib/forge-std/src/interfaces/IERC20.sol";
+import "../lib/sentiment-protocol/src/interface/core/IRegistry.sol";
+import "../lib/sentiment-protocol/src/interface/tokens/ILToken.sol";
 
 contract SentimentLiquidator {
     address owner = msg.sender;
@@ -15,8 +16,8 @@ contract SentimentLiquidator {
 
     // IAccountManager manager =
     //     AccountManager(0x62c5aa8277e49b3ead43dc67453ec91dc6826403);
-
     IRiskEngine risk = IRiskEngine(0xc0ac97A0eA320Aa1E32e9DEd16fb580Ef3C078Da);
+    IRegistry registry = IRegistry(0x17B07cfBAB33C0024040e7C299f8048F4a49679B);
 
     // sushi weth-usdc
     address pair = 0x905dfCD5649217c42684f23958568e533C711Aa3;
@@ -26,6 +27,14 @@ contract SentimentLiquidator {
 
         // get payback needed
         address[] memory accountBorrows = IAccount(_vault).getBorrows();
+        // usdt, usdc, eth?
+        uint borrowLen = accountBorrows.length;
+        ILToken debtToken;
+        uint amt;
+        for (uint i; i < borrowLen; i++) {
+            address addr = accountBorrows[i];
+            debtToken = ILToken(registry.LTokenFor(addr));
+        }
 
         // perform flash swap
         bytes memory data = abi.encode(_vault);
@@ -47,7 +56,7 @@ contract SentimentLiquidator {
         bytes calldata data
     ) public {
         IAccount _target = IAccount(abi.decode(data, (address)));
-
+        address[] memory accountAssets = _target.getAssets();
         address token0 = IUniswapV2Pair(msg.sender).token0(); // fetch the address of token0
         address token1 = IUniswapV2Pair(msg.sender).token1(); // fetch the address of token1
         assert(msg.sender == factoryV2.getPair(token0, token1)); // ensure that msg.sender is a V2 pair
