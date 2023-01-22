@@ -11,20 +11,24 @@ import "../lib/sentiment-protocol/src/interface/tokens/ILToken.sol";
 
 contract SentimentLiquidator {
     address owner = msg.sender;
-    IUniswapV2Factory factory =
-        IUniswapV2Factory(0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506);
+    IUniswapV2Factory public factory =
+        IUniswapV2Factory(0xc35DADB65012eC5796536bD9864eD8773aBc74C4);
 
     // IAccountManager manager =
     //     AccountManager(0x62c5aa8277e49b3ead43dc67453ec91dc6826403);
-    address manager = 0x62c5AA8277E49B3EAd43dC67453ec91DC6826403;
-    IRiskEngine risk = IRiskEngine(0xc0ac97A0eA320Aa1E32e9DEd16fb580Ef3C078Da);
-    IRegistry registry = IRegistry(0x17B07cfBAB33C0024040e7C299f8048F4a49679B);
+    address public manager = 0x62c5AA8277E49B3EAd43dC67453ec91DC6826403;
+    IRiskEngine public risk =
+        IRiskEngine(0xc0ac97A0eA320Aa1E32e9DEd16fb580Ef3C078Da);
+    IRegistry public registry =
+        IRegistry(0x17B07cfBAB33C0024040e7C299f8048F4a49679B);
 
-    address weth = 0x82aF49447D8a07e3bd95BD0d56f35241523fBab1;
-    address usdc = 0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8;
+    address public weth = 0x82aF49447D8a07e3bd95BD0d56f35241523fBab1;
+    address public usdc = 0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8;
+
+    receive() external payable {}
 
     function liquidate(address _vault) public {
-        if (msg.sender != owner || risk.isAccountHealthy(_vault)) revert();
+        if (msg.sender != owner /* || risk.isAccountHealthy(_vault)*/) revert();
 
         // get payback needed
         address[] memory borrowTokens = IAccount(_vault).getBorrows();
@@ -36,20 +40,15 @@ contract SentimentLiquidator {
             borrowAmounts[i] = debtToken.getBorrowBalance(_vault);
         }
 
-        // find pair to borrow from
-        if (borrowLen == 3) revert();
         address possiblePair;
-        if (borrowLen == 2) {
+        // find pair to borrow from
+        if (borrowLen == 3)
+            revert(); // todo
+        else if (borrowLen == 2) {
             possiblePair = factory.getPair(borrowTokens[0], borrowTokens[1]);
         } else if (borrowLen == 1) {
-            // if its weth or usdc, choose usdc pair
-            if (borrowTokens[0] == weth || borrowTokens[0] == usdc) {
-                // sushi weth-usdc
-                address pair = 0x905dfCD5649217c42684f23958568e533C711Aa3;
-                possiblePair = pair;
-            } else possiblePair = factory.getPair(borrowTokens[0], weth);
+            possiblePair = factory.getPair(borrowTokens[0], weth);
         }
-
         if (possiblePair == address(0)) revert();
 
         // determine token order and set borrow amounts
@@ -58,50 +57,78 @@ contract SentimentLiquidator {
         address token1 = pair.token1();
         uint256 a0 = 0;
         uint256 a1 = 0;
+        for (uint i; i < borrowLen; i++) {
+            if (borrowTokens[i] == token0) a0 = borrowAmounts[i];
+            else if (borrowTokens[i] == token1) a1 = borrowAmounts[i];
+        }
 
         // perform flash swap
-        bytes memory data = abi.encode(_vault, borrowTokens);
-        possiblePair.call(
-            abi.encodeWithSignature(
-                "swap(uint256,uint256,address,bytes)",
-                0,
-                0,
-                address(this),
-                data
-            )
-        );
+        bytes memory data = abi.encode(_vault);
+        pair.swap(a0, a1, address(this), data);
     }
 
     function uniswapV2Call(
         address sender,
-        uint amount0,
-        uint amount1,
+        uint256 amount0,
+        uint256 amount1,
         bytes calldata data
     ) public {
-        // receive flash swap, validate
-        address token0 = IUniswapV2Pair(msg.sender).token0();
-        address token1 = IUniswapV2Pair(msg.sender).token1();
-        assert(msg.sender == factory.getPair(token0, token1));
-        (address _targetAddr, address[] memory accountAssets) = abi.decode(
-            data,
-            (address, address[])
-        );
-        IAccount _target = IAccount(_targetAddr);
-        // address[] memory accountAssets = _target.getAssets();
+        IUniswapV2Pair pair = IUniswapV2Pair(msg.sender);
+        address token0 = pair.token0();
+        address token1 = pair.token1();
+        address canonPool = factory.getPair(token0, token1);
+        if (msg.sender != canonPool || sender != address(this)) revert();
+
         bool a0Plus = amount0 > 0;
         bool a1Plus = amount1 > 0;
         if (a0Plus) IERC20(token0).approve(address(manager), amount0);
         if (a1Plus) IERC20(token1).approve(address(manager), amount1);
+
+        address _targetAddr = abi.decode(data, (address));
         manager.call(
-            abi.encodeWithSignature("liquidate(address)", address(_target))
+            abi.encodeWithSignature("liquidate(address)", _targetAddr)
         );
 
         if (a0Plus) {
-            IERC20(token0).transfer(msg.sender, amount0);
+            uint256 balance0 = IERC20(token0).balanceOf(address(this));
+            bool repaidWeth = false;
+            if (balance0 < amount0) {
+                IUniswapV2Pair wethTokenPair = IUniswapV2Pair(
+                    factory.getPair(weth, token0)
+                );
+                weth.call{value: address(this).balance}("");
+                if (address(wethTokenPair) == msg.sender) {
+                    // can replenish with weth
+                    ERC20(weth).transfer(
+                        msg.sender,
+                        ERC20(weth).balanceOf(address(this))
+                    );
+                    repaidWeth = true;
+                }
+                // wethTokenPair.swap(0, 0, address(pair), "");
+            }
+            if (!repaidWeth) IERC20(token0).transfer(msg.sender, amount0);
             IERC20(token0).approve(msg.sender, 0);
         }
         if (a1Plus) {
-            IERC20(token1).transfer(msg.sender, amount1);
+            uint256 balance1 = IERC20(token1).balanceOf(address(this));
+            bool repaidWeth = false;
+            if (balance1 < amount1) {
+                IUniswapV2Pair wethTokenPair = IUniswapV2Pair(
+                    factory.getPair(weth, token1)
+                );
+                weth.call{value: address(this).balance}("");
+                if (address(wethTokenPair) == msg.sender) {
+                    // can replenish with weth
+                    ERC20(weth).transfer(
+                        msg.sender,
+                        ERC20(weth).balanceOf(address(this))
+                    );
+                    repaidWeth = true;
+                }
+                // wethTokenPair.swap(0, 0, address(pair), "");
+            }
+            if (!repaidWeth) IERC20(token1).transfer(msg.sender, amount1);
             IERC20(token1).approve(msg.sender, 0);
         }
     }
