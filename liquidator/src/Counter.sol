@@ -11,7 +11,7 @@ import "../lib/sentiment-protocol/src/interface/tokens/ILToken.sol";
 
 contract SentimentLiquidator {
     address owner = msg.sender;
-    IUniswapV2Factory factoryV2 =
+    IUniswapV2Factory factory =
         IUniswapV2Factory(0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506);
 
     // IAccountManager manager =
@@ -21,7 +21,7 @@ contract SentimentLiquidator {
     IRegistry registry = IRegistry(0x17B07cfBAB33C0024040e7C299f8048F4a49679B);
 
     address weth = 0x82aF49447D8a07e3bd95BD0d56f35241523fBab1;
-    address usdc = 0xff970a61a04b1ca14834a43f5de4533ebddb5cc8;
+    address usdc = 0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8;
 
     function liquidate(address _vault) public {
         if (msg.sender != owner || risk.isAccountHealthy(_vault)) revert();
@@ -54,11 +54,13 @@ contract SentimentLiquidator {
 
         // determine token order and set borrow amounts
         IUniswapV2Pair pair = IUniswapV2Pair(possiblePair);
+        address token0 = pair.token0();
+        address token1 = pair.token1();
         uint256 a0 = 0;
         uint256 a1 = 0;
 
         // perform flash swap
-        bytes memory data = abi.encode(_vault);
+        bytes memory data = abi.encode(_vault, borrowTokens);
         possiblePair.call(
             abi.encodeWithSignature(
                 "swap(uint256,uint256,address,bytes)",
@@ -77,14 +79,17 @@ contract SentimentLiquidator {
         bytes calldata data
     ) public {
         // receive flash swap, validate
-        address[] memory accountAssets = _target.getAssets();
         address token0 = IUniswapV2Pair(msg.sender).token0();
         address token1 = IUniswapV2Pair(msg.sender).token1();
-        assert(msg.sender == factoryV2.getPair(token0, token1));
-
+        assert(msg.sender == factory.getPair(token0, token1));
+        (address _targetAddr, address[] memory accountAssets) = abi.decode(
+            data,
+            (address, address[])
+        );
+        IAccount _target = IAccount(_targetAddr);
+        // address[] memory accountAssets = _target.getAssets();
         bool a0Plus = amount0 > 0;
         bool a1Plus = amount1 > 0;
-        IAccount _target = IAccount(abi.decode(data, (address)));
         if (a0Plus) IERC20(token0).approve(address(manager), amount0);
         if (a1Plus) IERC20(token1).approve(address(manager), amount1);
         manager.call(
