@@ -3,10 +3,14 @@ pragma solidity ^0.8.13;
 
 import "../lib/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
 import "../lib/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
+import "../lib/sentiment-protocol/src/core/AccountManager.sol";
 
 contract SentimentLiquidator {
     IUniswapV2Factory factoryV2 =
         IUniswapV2Factory(0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506);
+
+    AccountManager manager =
+        AccountManager(0x62c5aa8277e49b3ead43dc67453ec91dc6826403);
 
     // sushi weth-usdc
     // address pair = 0x905dfCD5649217c42684f23958568e533C711Aa3;
