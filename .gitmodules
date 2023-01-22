@@ -10,3 +10,6 @@
 	path = liquidator/lib/v2-core
 	url = https://github.com/Uniswap/v2-core
 	branch = v1.0.1
+[submodule "liquidator/lib/sentiment-protocol"]
+	path = liquidator/lib/sentiment-protocol
+	url = https://github.com/lib/sentiment-protocol
