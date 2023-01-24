@@ -9,7 +9,11 @@ import "../lib/sentiment-protocol/src/interface/core/IAccount.sol";
 import "../lib/sentiment-protocol/src/interface/core/IRegistry.sol";
 import "../lib/sentiment-protocol/src/interface/tokens/ILToken.sol";
 
+import {FixedPointMathLib} from "../lib/solmate/src/utils/FixedPointMathLib.sol";
+
+
 contract SentimentLiquidator {
+    using FixedPointMathLib for uint;
     address owner = msg.sender;
     IUniswapV2Factory public factory =
         IUniswapV2Factory(0xc35DADB65012eC5796536bD9864eD8773aBc74C4);
@@ -132,4 +136,14 @@ contract SentimentLiquidator {
             IERC20(token1).approve(msg.sender, 0);
         }
     }
+
+    function healthFactor(address _acc) public returns (uint256) {
+        uint256 bal = risk.getBalance(_acc);
+        uint256 borrows = risk.getBorrows(_acc);
+        
+        // 
+        uint balanceToBorrowThreshold = 1.2e18;
+        return bal.divWadDown(borrows);
+    }
+
 }
