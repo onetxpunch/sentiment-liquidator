@@ -12,7 +12,7 @@
 	branch = v1.0.1
 [submodule "liquidator/lib/sentiment-protocol"]
 	path = liquidator/lib/sentiment-protocol
-	url = https://github.com/lib/sentiment-protocol
+	url = https://github.com/sentimentxyz/protocol
 [submodule "liquidator/lib/solmate"]
 	path = liquidator/lib/solmate
 	url = https://github.com/rari-capital/solmate
