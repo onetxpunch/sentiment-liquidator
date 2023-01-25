@@ -1,17 +1,14 @@
 import { BigNumber, ethers } from "ethers";
 import riskEngineAbi from "./abi/risk-engine.json" assert { type: "json" };
 import registryAbi from "./abi/registry.json" assert { type: "json" };
-import accountManagerAbi from "./abi/account-manager.json" assert { type: "json" };
-import accountAbi from "./abi/account.json" assert { type: "json" };
-import erc20Abi from "./abi/erc20.json" assert { type: "json" };
 import liquidatorAbi from "./abi/liquidator.json" assert { type: "json" };
+import { Contract, Provider } from "ethcall";
 
 const IS_DEV = true;
-const balanceToBorrowThreshold = ethers.utils.parseEther("1.2");
-const wallet = ethers.Wallet.createRandom();
 const provider = new ethers.providers.JsonRpcProvider(
   IS_DEV ? "http://127.0.0.1:8545" : "https://rpc.ankr.com/arbitrum"
 );
+const wallet = ethers.Wallet.createRandom();
 wallet.connect(provider);
 
 enum ContractNames {
@@ -28,8 +25,11 @@ interface ContractDetails {
 interface Account {
   address: string;
   health: number;
+  bal: number;
+  borrows: number;
 }
 
+// List of contract addresses and ABIs
 const contracts: Record<ContractNames, ContractDetails> = {
   liquidator: {
     address: IS_DEV ? "0xc3e53F4d16Ae77Db1c982e75a937B9f60FE63690" : "0x0",
@@ -53,90 +53,187 @@ const getContract = (contract: ContractNames) => {
   );
 };
 
+const ethcallProvider = new Provider();
+await ethcallProvider.init(provider);
+const registryEthCall = new Contract(
+  contracts.registry.address,
+  contracts.registry.abi
+);
+const riskEngineEthCall = new Contract(
+  contracts.riskEngine.address,
+  contracts.riskEngine.abi
+);
+
 const liquidator = getContract(ContractNames.Liquidator);
 const registry = getContract(ContractNames.Registry);
 const riskEngine = getContract(ContractNames.RiskEngine);
 
+const getAccount = async (index: number) => {
+  try {
+    return await registry.accounts(index);
+  } catch (e: any) {
+    // Throw error to retry on SERVER_ERROR
+    if (e.error && e.error.code == "SERVER_ERROR") throw e;
+    else {
+      console.log("Error fetching account index", index);
+      console.log(e); // Likely an out of bounds error, don't retry
+      return undefined;
+    }
+  }
+};
+
 // Get all registered accounts from the Registry
 const fetchAllAccounts = async () => {
   console.log("Fetching all accounts...");
-  let accounts: any[] = [];
-  for (let i = 0; i < 100; i++) {
-    console.log("Fetching account", i);
-    accounts.push((await registry.accounts(i)) as any);
+  let accounts: string[] = [];
+  const totalAccounts = 9907;
+  const batchSize = 100; // Parallelize requests in batches
+  for (let i = 0; i < totalAccounts; i += batchSize) {
+    try {
+      const arraySize =
+        i + batchSize > totalAccounts ? totalAccounts - i : batchSize;
+      const arr: Promise<string>[] = Array.from(Array(arraySize)).map((_, j) =>
+        getAccount(i + j)
+      );
+      const res = await Promise.all(arr);
+      console.log(`Fetched ${i + batchSize} accounts`);
+      accounts = accounts.concat(res);
+    } catch (e: any) {
+      console.log(
+        "Server error fetching accounts",
+        i,
+        i + batchSize,
+        "Retrying..."
+      );
+      await wait(15); // Throttle requests
+      i -= batchSize; // Retry batch
+    }
   }
   return accounts;
   // return await registry.getAllAccounts();
 };
 
-const getHealthFactor = async (account: string): Promise<number> => {
-  const [balBn, borrowsBn]: BigNumber[] = await Promise.all([
-    riskEngine.getBalance(account),
-    riskEngine.getBorrows(account),
-  ]);
-  if (borrowsBn.eq(0)) return 2;
-
-  const bal = Number(ethers.utils.formatEther(balBn));
-  const borrows = Number(ethers.utils.formatEther(borrowsBn));
-  console.log("got balance", bal);
-  console.log("got borrows", borrows);
-  return bal / borrows;
-};
-
-// Get health factor for all accounts
-const getAccountsHealth = async (accounts: string[]) => {
-  let accountsHealth: any[] = [];
-  for (let account of accounts) {
-    const healthBN = await getHealthFactor(account);
-    console.log(healthBN.toString());
-    const health = ethers.utils.formatEther(healthBN);
-    accountsHealth.push({ address: account, health: Number(health) });
+// Calculate health factor for an account
+const getHealthFactor = async (
+  account: string
+): Promise<{ health: number; bal: number; borrows: number }> => {
+  if (!account) return { health: -1, bal: 0, borrows: 0 };
+  try {
+    const [balBn, borrowsBn]: BigNumber[] = await ethcallProvider.all([
+      riskEngineEthCall.getBalance(account),
+      riskEngineEthCall.getBorrows(account),
+    ]);
+    // Calculate health factor in gwei to prevent underflow
+    const bal = Number(ethers.utils.formatUnits(balBn, "gwei"));
+    const borrows = Number(ethers.utils.formatUnits(borrowsBn, "gwei"));
+    if (borrowsBn.eq(0)) return { health: 100, bal, borrows };
+    return { health: bal / borrows, bal, borrows };
+  } catch (e: any) {
+    // Throw error to retry on SERVER_ERROR
+    if (e.error && e.error.code == "SERVER_ERROR") throw e;
+    else {
+      console.log("Error getting health factor", account);
+      console.log(e);
+    }
+    return { health: -1, bal: 0, borrows: 0 };
   }
 };
 
+// Get health factor for all accounts
+const getAccountsHealth = async (accounts: string[]): Promise<Account[]> => {
+  console.log("Getting accounts health...");
+  let healthFactors: { health: number; bal: number; borrows: number }[] = [];
+  const batchSize = 50; // Parallelize requests in batches
+  for (let i = 0; i < accounts.length; i += batchSize) {
+    try {
+      const arraySize =
+        i + batchSize > accounts.length ? accounts.length - i : batchSize;
+      const arr = Array.from(Array(arraySize)).map((_, j) =>
+        getHealthFactor(accounts[i + j])
+      );
+      const res = await Promise.all(arr);
+      console.log(`Fetched ${i + batchSize} health factors`);
+      healthFactors = healthFactors.concat(res);
+      await wait(1); // Throttle requests
+    } catch (e: any) {
+      console.log(
+        "Server error fetching health",
+        i,
+        i + batchSize,
+        "Retrying..."
+      );
+      await wait(15); // Throttle requests
+      i -= batchSize; // Retry batch
+    }
+  }
+  return healthFactors.map((health, i) => ({
+    address: accounts[i],
+    ...health,
+  }));
+};
+
+// Attempt to liquidate an account
 const liquidate = async (account: string) => {
-  return await liquidator.liquidate(account);
+  try {
+    await liquidator.liquidate(account);
+  } catch (e) {
+    console.log("Error liquidating account: ", account, e);
+  }
+};
+
+// Separate accounts according to health factors
+const filterAccounts = (accounts: Account[]) => {
+  const failed = accounts.filter((account) => account.health <= 0);
+  let defaulted = accounts.filter(
+    (account) => account.health > 0 && account.health <= 1.2
+  );
+  let highRisk = accounts.filter(
+    (account) => account.health > 1.2 && account.health <= 1.21
+  );
+  let mediumRisk = accounts.filter(
+    (account) => account.health > 1.21 && account.health <= 1.25
+  );
+  return { failed, defaulted, highRisk, mediumRisk };
 };
 
 const monitor = async (accounts: Account[]) => {
   // Separate accounts according to health factors
-  const highRisk = accounts.filter((account) => account.health < 1.4);
-  const mediumRisk = accounts.filter(
-    (account) => account.health >= 1.4 && account.health < 1.6
+  let { failed, defaulted, highRisk, mediumRisk } = filterAccounts(accounts);
+  console.log(
+    `${defaulted.length} defaulted, ${highRisk.length} high risk, ${mediumRisk.length} medium risk, ${failed.length} failed`
   );
-  const lowRisk = accounts.filter((account) => account.health >= 1.6);
-  console.log(`${highRisk.length} accounts in danger zone`);
-  console.log(`${mediumRisk.length} medium risk accounts`);
-  console.log(`${lowRisk.length} low risk accounts`);
 
-  // while (true) {
-  //   // Liquidate accounts in danger zone
-  //   if (highRisk.length > 0) {
-  //     console.log("Liquidating accounts in danger zone...");
-  //     await Promise.all(highRisk.map((account) => liquidate(account.account)));
-  //   }
-  //   // Monitor accounts
-  //   const accountsHealth = await getAccountsHealth(accounts.map((a) => a.account));
-  //   const newHighRisk = accountsHealth.filter((account) => account.health < 0.4);
-  //   const newMediumRisk = accountsHealth.filter(
-  //     (account) => account.health >= 0.4 && account.health < 0.6
-  //   );
-  //   const newLowRisk = accountsHealth.filter((account) => account.health >= 0.6);
-  //   // Wait 15 seconds
-  //   await new Promise((resolve) => setTimeout(resolve, 15000));
-  // }
+  // Permanent loop
+  for (let i = 0; true; i++) {
+    defaulted.map((account) => liquidate(account.address));
+    const updatedAccounts = await getAccountsHealth(
+      failed
+        .concat(defaulted)
+        .concat(highRisk)
+        .concat(mediumRisk)
+        .map((a) => a.address)
+    );
+    const filters = filterAccounts(updatedAccounts);
+    failed = filters.failed;
+    defaulted = filters.defaulted;
+    highRisk = filters.highRisk;
+    mediumRisk = filters.mediumRisk;
+    console.log(
+      `${defaulted.length} defaulted, ${highRisk.length} high risk, ${mediumRisk.length} medium risk, ${failed.length} failed`
+    );
+    await wait(10);
+  }
+};
+
+const wait = (s: number) => {
+  console.log("Waiting for", s, "seconds");
+  return new Promise((resolve) => setTimeout(resolve, s * 1000));
 };
 
 const main = async () => {
   const accounts = await fetchAllAccounts();
-  console.log(`${accounts.length} accounts found`);
-
-  console.log("Getting accounts health...");
   const accountsHealth = await getAccountsHealth(accounts);
-  // console.log(`Fetched ${accountsHealth.length} health factors`);
-
-  console.log("Monitoring accounts health...");
-  // await monitor(accountsHealth);
+  await monitor(accountsHealth);
 };
 
 await main();
