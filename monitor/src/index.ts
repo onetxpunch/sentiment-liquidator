@@ -55,56 +55,54 @@ const getContract = (contract: ContractNames) => {
 
 const ethcallProvider = new Provider();
 await ethcallProvider.init(provider);
-const registryEthCall = new Contract(
+const registry = new Contract(
   contracts.registry.address,
   contracts.registry.abi
 );
-const riskEngineEthCall = new Contract(
+const riskEngine = new Contract(
   contracts.riskEngine.address,
   contracts.riskEngine.abi
 );
-
 const liquidator = getContract(ContractNames.Liquidator);
-const registry = getContract(ContractNames.Registry);
-const riskEngine = getContract(ContractNames.RiskEngine);
-
-const getAccount = async (index: number) => {
-  try {
-    return await registry.accounts(index);
-  } catch (e: any) {
-    // Throw error to retry on SERVER_ERROR
-    if (e.error && e.error.code == "SERVER_ERROR") throw e;
-    else {
-      console.log("Error fetching account index", index);
-      console.log(e); // Likely an out of bounds error, don't retry
-      return undefined;
-    }
-  }
-};
 
 // Get all registered accounts from the Registry
 const fetchAllAccounts = async () => {
+  console.log("testing");
+  try {
+    const test = await ethcallProvider.all([
+      ethcallProvider.getEthBalance(
+        "0x646C9C404d2d575805FF4b8302A158BAd8676412"
+      ),
+    ]);
+    console.log(test);
+  } catch (e) {
+    console.log(e);
+    console.log("you fucked up");
+  }
   console.log("Fetching all accounts...");
   let accounts: string[] = [];
   const totalAccounts = 9907;
-  const batchSize = 100; // Parallelize requests in batches
+  const batchSize = 10; // Parallelize requests in batches
   for (let i = 0; i < totalAccounts; i += batchSize) {
     try {
       const arraySize =
         i + batchSize > totalAccounts ? totalAccounts - i : batchSize;
-      const arr: Promise<string>[] = Array.from(Array(arraySize)).map((_, j) =>
-        getAccount(i + j)
+
+      const calls = Array.from(Array(arraySize)).map((_, j) =>
+        registry.accounts(i + j)
       );
-      const res = await Promise.all(arr);
+      const res: (string | null)[] = await ethcallProvider.tryAll(calls);
       console.log(`Fetched ${i + batchSize} accounts`);
-      accounts = accounts.concat(res);
+      accounts = accounts.concat(res.filter((a) => a !== null) as string[]);
     } catch (e: any) {
-      console.log(
-        "Server error fetching accounts",
-        i,
-        i + batchSize,
-        "Retrying..."
-      );
+      // console.log(e);
+
+      // console.log(
+      //   "Server error fetching accounts",
+      //   i,
+      //   i + batchSize,
+      //   "Retrying..."
+      // );
       await wait(15); // Throttle requests
       i -= batchSize; // Retry batch
     }
@@ -120,8 +118,8 @@ const getHealthFactor = async (
   if (!account) return { health: -1, bal: 0, borrows: 0 };
   try {
     const [balBn, borrowsBn]: BigNumber[] = await ethcallProvider.all([
-      riskEngineEthCall.getBalance(account),
-      riskEngineEthCall.getBorrows(account),
+      riskEngine.getBalance(account),
+      riskEngine.getBorrows(account),
     ]);
     // Calculate health factor in gwei to prevent underflow
     const bal = Number(ethers.utils.formatUnits(balBn, "gwei"));
